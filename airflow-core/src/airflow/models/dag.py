@@ -68,6 +68,7 @@ from airflow.models.dagbundle import DagBundleModel
 from airflow.models.dagrun import DagRun
 from airflow.models.team import Team
 from airflow.serialization.definitions.assets import SerializedAssetUniqueKey
+from airflow.serialization.definitions.notset import NOTSET, ArgNotSet, is_arg_set
 from airflow.serialization.encoders import DAT, encode_deadline_alert
 from airflow.serialization.enums import Encoding
 from airflow.timetables.base import DataInterval, PartitionMapperInfo, Timetable
@@ -325,6 +326,8 @@ class DagModel(Base):
     is_paused_at_creation = airflow_conf.getboolean("core", "dags_are_paused_at_creation")
     is_paused: Mapped[bool] = mapped_column(Boolean, default=is_paused_at_creation)
     is_draining: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    # When set, the scheduler makes the paused or draining Dag active again at this time
+    paused_until: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     # Whether that DAG was seen on the last DagBag load
     is_stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     exceeds_max_non_backfill: Mapped[bool] = mapped_column(
@@ -414,7 +417,9 @@ class DagModel(Base):
     __table_args__ = (
         Index("idx_next_dagrun_create_after", next_dagrun_create_after, unique=False),
         Index("idx_dag_is_draining", is_draining, unique=False),
+        Index("idx_dag_paused_until", paused_until, unique=False),
         CheckConstraint("NOT (is_paused AND is_draining)", name="dag_pause_state_valid"),
+        CheckConstraint("paused_until IS NULL OR is_paused OR is_draining", name="dag_paused_until_valid"),
     )
 
     schedule_asset_references = relationship(
@@ -504,10 +509,24 @@ class DagModel(Base):
             return DagSchedulingState.DRAINING
         return DagSchedulingState.ACTIVE
 
-    def set_scheduling_state(self, state: DagSchedulingState) -> None:
-        """Set the Dag's scheduling state."""
+    def set_scheduling_state(
+        self, state: DagSchedulingState, *, paused_until: datetime | None | ArgNotSet = NOTSET
+    ) -> None:
+        """
+        Set the Dag's scheduling state.
+
+        Activating removes the timer. Otherwise a passed ``paused_until`` sets the timer (``None``
+        removes it), and leaving it out keeps the current one.
+
+        :param state: The new scheduling state.
+        :param paused_until: When the scheduler makes the Dag active again. Ignored for the active state.
+        """
         self.is_paused = state == DagSchedulingState.PAUSED
         self.is_draining = state == DagSchedulingState.DRAINING
+        if state == DagSchedulingState.ACTIVE:
+            self.paused_until = None
+        elif is_arg_set(paused_until):
+            self.paused_until = paused_until
 
     def is_rollup_asset(self, *, name: str, uri: str) -> bool:
         """

@@ -443,6 +443,7 @@ export type BulkCreateAction_VariableBody_ = {
 export type BulkDAGBody = {
     is_paused?: boolean | null;
     scheduling_state?: DagSchedulingState | null;
+    paused_until?: string | null;
     dag_id: string;
 };
 
@@ -920,6 +921,7 @@ export type DAGDetailsResponse = {
     dag_display_name: string;
     is_paused: boolean;
     scheduling_state?: DagSchedulingState;
+    paused_until?: string | null;
     is_stale: boolean;
     last_parsed_time: string | null;
     last_parse_duration: number | null;
@@ -996,6 +998,7 @@ export type DAGDetailsResponse = {
 export type DAGPatchBody = {
     is_paused?: boolean | null;
     scheduling_state?: DagSchedulingState | null;
+    paused_until?: string | null;
 };
 
 /**
@@ -1006,6 +1009,7 @@ export type DAGResponse = {
     dag_display_name: string;
     is_paused: boolean;
     scheduling_state?: DagSchedulingState;
+    paused_until?: string | null;
     is_stale: boolean;
     last_parsed_time: string | null;
     last_parse_duration: number | null;
@@ -2628,6 +2632,7 @@ export type DAGWithLatestDagRunsResponse = {
     dag_display_name: string;
     is_paused: boolean;
     scheduling_state?: DagSchedulingState;
+    paused_until?: string | null;
     is_stale: boolean;
     last_parsed_time: string | null;
     last_parse_duration: number | null;

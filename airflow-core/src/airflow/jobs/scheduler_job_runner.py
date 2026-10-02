@@ -1873,6 +1873,31 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
             )
             self.log.info("Dag drain completed; Dag is now paused", dag_id=dag_model.dag_id)
 
+    @provide_session
+    def _resume_dags_with_expired_pause(self, *, session: Session = NEW_SESSION) -> None:
+        query = (
+            select(DagModel)
+            .where(DagModel.paused_until <= timezone.utcnow())
+            .order_by(DagModel.paused_until)
+            .limit(DagModel.NUM_DAGS_PER_DAGRUN_QUERY)
+        )
+        dags = session.scalars(with_row_locks(query, of=DagModel, session=session, skip_locked=True)).all()
+        for dag_model in dags:
+            paused_until = dag_model.paused_until
+            if TYPE_CHECKING:
+                assert paused_until is not None
+            dag_model.set_scheduling_state(DagSchedulingState.ACTIVE)
+            session.add(
+                Log(
+                    event="pause_expired",
+                    dag_id=dag_model.dag_id,
+                    owner="scheduler",
+                    owner_display_name="Scheduler",
+                    extra=f"Dag was paused until {paused_until.isoformat()}",
+                )
+            )
+            self.log.info("Dag pause expired; Dag is now active", dag_id=dag_model.dag_id)
+
     def _run_scheduler_loop(self) -> None:
         """
         Harvest DAG parsing results, queue tasks, and perform executor heartbeat; the actual scheduler loop.
@@ -1939,6 +1964,7 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
 
         timers.call_regular_interval(60.0, self._update_dag_run_state_for_paused_dags)
         timers.call_regular_interval(5.0, self._finalize_draining_dags)
+        timers.call_regular_interval(5.0, self._resume_dags_with_expired_pause)
 
         timers.call_regular_interval(
             conf.getfloat("scheduler", "task_queued_timeout_check_interval"),

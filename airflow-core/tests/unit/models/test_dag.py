@@ -35,6 +35,7 @@ import pendulum
 import pytest
 import time_machine
 from sqlalchemy import delete, func, inspect, select, update
+from sqlalchemy.exc import DBAPIError
 
 from airflow import settings
 from airflow._shared.module_loading import qualname
@@ -90,6 +91,7 @@ from airflow.sdk.definitions.param import Param
 from airflow.sdk.exceptions import TaskAwaitingInput
 from airflow.sdk.execution_time.hitl import upsert_hitl_detail
 from airflow.serialization.definitions.dag import SerializedDAG
+from airflow.serialization.definitions.notset import NOTSET
 from airflow.serialization.encoders import coerce_to_core_timetable
 from airflow.serialization.serialized_objects import LazyDeserializedDAG
 from airflow.task.trigger_rule import TriggerRule
@@ -3055,6 +3057,43 @@ class TestDagModel:
         assert dag_model.scheduling_state == state
         assert dag_model.is_paused is (state == DagSchedulingState.PAUSED)
         assert dag_model.is_draining is (state == DagSchedulingState.DRAINING)
+
+    @pytest.mark.parametrize(
+        ("state", "paused_until", "expected_paused_until"),
+        [
+            pytest.param(DagSchedulingState.PAUSED, TEST_DATE, TEST_DATE, id="pause"),
+            pytest.param(DagSchedulingState.PAUSED, None, None, id="pause-indefinitely"),
+            pytest.param(
+                DagSchedulingState.PAUSED, NOTSET, TEST_DATE - timedelta(days=1), id="pause-keeps-timer"
+            ),
+            pytest.param(DagSchedulingState.ACTIVE, TEST_DATE, None, id="activate"),
+        ],
+    )
+    def test_set_scheduling_state_updates_paused_until(self, state, paused_until, expected_paused_until):
+        dag_model = DagModel(
+            dag_id="test_set_scheduling_state_updates_paused_until",
+            bundle_name="testing",
+            is_paused=True,
+            paused_until=TEST_DATE - timedelta(days=1),
+        )
+
+        dag_model.set_scheduling_state(state, paused_until=paused_until)
+
+        assert dag_model.paused_until == expected_paused_until
+
+    def test_paused_until_requires_paused_or_draining_dag(self, session, testing_dag_bundle):
+        session.add(
+            DagModel(
+                dag_id="test_paused_until_requires_paused_or_draining_dag",
+                bundle_name="testing",
+                is_paused=False,
+                paused_until=TEST_DATE,
+            )
+        )
+
+        with pytest.raises(DBAPIError, match="dag_paused_until_valid"):
+            session.flush()
+        session.rollback()
 
     def test_dags_needing_dagruns_only_unpaused(self, testing_dag_bundle):
         """

@@ -30,6 +30,8 @@ from airflow.api_fastapi.core_api.datamodels.common import (
 from airflow.api_fastapi.core_api.datamodels.dags import BulkDAGBody, DAGPatchBody
 from airflow.api_fastapi.core_api.services.public.common import BulkService
 from airflow.models.dag import DagModel
+from airflow.serialization.definitions.notset import NOTSET
+from airflow.utils.sqlalchemy import with_row_locks
 from airflow.utils.state import DagSchedulingState
 
 
@@ -70,7 +72,14 @@ class BulkDagService(BulkService[BulkDAGBody]):
         dag_map = {
             dag.dag_id: dag
             for dag in self.session.scalars(
-                select(DagModel).where(DagModel.dag_id.in_(entities_by_id.keys()))
+                with_row_locks(
+                    select(DagModel)
+                    .where(DagModel.dag_id.in_(entities_by_id.keys()))
+                    # A stable lock order keeps concurrent bulk updates from deadlocking.
+                    .order_by(DagModel.dag_id),
+                    of=DagModel,
+                    session=self.session,
+                )
             )
         }
         not_found_ids = set(entities_by_id) - set(dag_map)
@@ -90,7 +99,14 @@ class BulkDagService(BulkService[BulkDAGBody]):
                 dag = dag_map.get(dag_id)
                 if dag is None:
                     continue
-                dag.set_scheduling_state(get_scheduling_state(entities_by_id[dag_id]))
+                entity = entities_by_id[dag_id]
+                fields_to_update = entity.model_fields_set
+                if action.update_mask:
+                    fields_to_update = fields_to_update.intersection(action.update_mask)
+                dag.set_scheduling_state(
+                    get_scheduling_state(entity),
+                    paused_until=entity.paused_until if "paused_until" in fields_to_update else NOTSET,
+                )
                 results.success.append(dag_id)
         except HTTPException as e:
             results.errors.append({"error": f"{e.detail}", "status_code": e.status_code})

@@ -81,6 +81,7 @@ from airflow.exceptions import AirflowException, DagNotFound
 from airflow.models import DagModel
 from airflow.models.dag_favorite import DagFavorite
 from airflow.models.dagrun import DagRun
+from airflow.serialization.definitions.notset import NOTSET
 from airflow.utils.sqlalchemy import with_row_locks
 from airflow.utils.state import DagRunState, DagSchedulingState
 
@@ -317,10 +318,12 @@ def patch_dag(
 
     fields_to_update = patch_body.model_fields_set
     if update_mask:
-        if len(update_mask) != 1 or update_mask[0] not in {"is_paused", "scheduling_state"}:
+        state_mask = [field for field in update_mask if field != "paused_until"]
+        if len(state_mask) != 1 or state_mask[0] not in {"is_paused", "scheduling_state"}:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "Only one of `is_paused` or `scheduling_state` can be updated through the REST API",
+                "Only one of `is_paused` or `scheduling_state`, optionally with `paused_until`, "
+                "can be updated through the REST API",
             )
         fields_to_update = fields_to_update.intersection(update_mask)
         try:
@@ -333,7 +336,10 @@ def patch_dag(
         except ValidationError as e:
             raise RequestValidationError(errors=e.errors())
 
-    dag.set_scheduling_state(get_scheduling_state(patch_body))
+    dag.set_scheduling_state(
+        get_scheduling_state(patch_body),
+        paused_until=patch_body.paused_until if "paused_until" in fields_to_update else NOTSET,
+    )
 
     return dag
 
@@ -370,10 +376,12 @@ def patch_dags(
     `~` or `%` for `dag_id_pattern`.
     """
     if update_mask:
-        if len(update_mask) != 1 or update_mask[0] not in {"is_paused", "scheduling_state"}:
+        state_mask = [field for field in update_mask if field != "paused_until"]
+        if len(state_mask) != 1 or state_mask[0] not in {"is_paused", "scheduling_state"}:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "Only one of `is_paused` or `scheduling_state` can be updated through the REST API",
+                "Only one of `is_paused` or `scheduling_state`, optionally with `paused_until`, "
+                "can be updated through the REST API",
             )
         try:
             DAGPatchBodyPartial(**patch_body.model_dump(include=set(update_mask)))
@@ -417,15 +425,22 @@ def patch_dags(
     ).subquery()
 
     scheduling_state = get_scheduling_state(patch_body)
-    session.execute(
+    fields_to_update = patch_body.model_fields_set
+    if update_mask:
+        fields_to_update = fields_to_update.intersection(update_mask)
+    stmt = (
         update(DagModel)
         .where(DagModel.dag_id.in_(select(filtered_dag_ids.c.dag_id)))
         .values(
             is_paused=scheduling_state == DagSchedulingState.PAUSED,
             is_draining=scheduling_state == DagSchedulingState.DRAINING,
         )
-        .execution_options(synchronize_session="fetch")
     )
+    if scheduling_state == DagSchedulingState.ACTIVE:
+        stmt = stmt.values(paused_until=None)
+    elif "paused_until" in fields_to_update:
+        stmt = stmt.values(paused_until=patch_body.paused_until)
+    session.execute(stmt.execution_options(synchronize_session="fetch"))
 
     return DAGCollectionResponse(
         dags=dags,

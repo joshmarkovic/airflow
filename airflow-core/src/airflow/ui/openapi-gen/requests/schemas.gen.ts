@@ -1446,6 +1446,18 @@ export const $BulkDAGBody = {
                 }
             ]
         },
+        paused_until: {
+            anyOf: [
+                {
+                    type: 'string',
+                    format: 'date-time'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Paused Until'
+        },
         dag_id: {
             type: 'string',
             title: 'Dag Id'
@@ -3039,6 +3051,18 @@ export const $DAGDetailsResponse = {
             '$ref': '#/components/schemas/DagSchedulingState',
             default: 'active'
         },
+        paused_until: {
+            anyOf: [
+                {
+                    type: 'string',
+                    format: 'date-time'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Paused Until'
+        },
         is_stale: {
             type: 'boolean',
             title: 'Is Stale'
@@ -3528,6 +3552,18 @@ export const $DAGPatchBody = {
                     type: 'null'
                 }
             ]
+        },
+        paused_until: {
+            anyOf: [
+                {
+                    type: 'string',
+                    format: 'date-time'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Paused Until'
         }
     },
     additionalProperties: false,
@@ -3553,6 +3589,18 @@ export const $DAGResponse = {
         scheduling_state: {
             '$ref': '#/components/schemas/DagSchedulingState',
             default: 'active'
+        },
+        paused_until: {
+            anyOf: [
+                {
+                    type: 'string',
+                    format: 'date-time'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Paused Until'
         },
         is_stale: {
             type: 'boolean',
@@ -10226,6 +10274,18 @@ export const $DAGWithLatestDagRunsResponse = {
         scheduling_state: {
             '$ref': '#/components/schemas/DagSchedulingState',
             default: 'active'
+        },
+        paused_until: {
+            anyOf: [
+                {
+                    type: 'string',
+                    format: 'date-time'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Paused Until'
         },
         is_stale: {
             type: 'boolean',

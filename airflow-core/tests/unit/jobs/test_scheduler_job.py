@@ -9269,6 +9269,78 @@ class TestSchedulerJob:
 
         assert dag_model.scheduling_state == DagSchedulingState.PAUSED
 
+    def test_finalize_draining_dag_keeps_paused_until(self, dag_maker, session):
+        with dag_maker("test_finalize_draining_dag_keeps_paused_until") as dag:
+            EmptyOperator(task_id="task")
+
+        paused_until = DEFAULT_DATE + timedelta(hours=1)
+        dag_model = DagModel.get_dagmodel(dag.dag_id, session=session)
+        dag_model.set_scheduling_state(DagSchedulingState.DRAINING, paused_until=paused_until)
+        session.flush()
+
+        self.job_runner = SchedulerJobRunner(job=Job(), executors=[self.null_exec])
+        self.job_runner._finalize_draining_dags(session=session)
+
+        assert dag_model.scheduling_state == DagSchedulingState.PAUSED
+        assert dag_model.paused_until == paused_until
+
+    @pytest.mark.parametrize("state", [DagSchedulingState.PAUSED, DagSchedulingState.DRAINING])
+    @time_machine.travel(DEFAULT_DATE, tick=False)
+    def test_resume_dags_with_expired_pause(self, state, dag_maker, session, caplog):
+        with dag_maker("test_resume_dags_with_expired_pause_expired", session=session):
+            EmptyOperator(task_id="task")
+        expired_dag_model = dag_maker.dag_model
+        with dag_maker("test_resume_dags_with_expired_pause_pending", session=session):
+            EmptyOperator(task_id="task")
+        pending_dag_model = dag_maker.dag_model
+
+        pending_paused_until = DEFAULT_DATE + timedelta(seconds=1)
+        expired_dag_model.set_scheduling_state(state, paused_until=DEFAULT_DATE)
+        pending_dag_model.set_scheduling_state(state, paused_until=pending_paused_until)
+        session.flush()
+
+        self.job_runner = SchedulerJobRunner(job=Job(), executors=[self.null_exec])
+        self.job_runner._resume_dags_with_expired_pause(session=session)
+        session.flush()
+
+        assert expired_dag_model.scheduling_state == DagSchedulingState.ACTIVE
+        assert expired_dag_model.paused_until is None
+        assert pending_dag_model.scheduling_state == state
+        assert pending_dag_model.paused_until == pending_paused_until
+        assert session.execute(select(Log.dag_id, Log.extra).where(Log.event == "pause_expired")).all() == [
+            (expired_dag_model.dag_id, f"Dag was paused until {DEFAULT_DATE.isoformat()}")
+        ]
+        assert {
+            "event": "Dag pause expired; Dag is now active",
+            "dag_id": expired_dag_model.dag_id,
+            "log_level": "info",
+        } in caplog
+
+    @time_machine.travel(DEFAULT_DATE, tick=False)
+    @mock.patch.object(DagModel, "NUM_DAGS_PER_DAGRUN_QUERY", 1)
+    def test_resume_dags_with_expired_pause_batches_earliest_expiry_first(self, dag_maker, session):
+        # The dag_ids sort opposite to the expiry times, so taking Dags in dag_id order fails the test.
+        with dag_maker("test_resume_dags_with_expired_pause_a", session=session):
+            EmptyOperator(task_id="task")
+        later_dag_model = dag_maker.dag_model
+        with dag_maker("test_resume_dags_with_expired_pause_b", session=session):
+            EmptyOperator(task_id="task")
+        earlier_dag_model = dag_maker.dag_model
+
+        later_dag_model.set_scheduling_state(
+            DagSchedulingState.PAUSED, paused_until=DEFAULT_DATE - timedelta(minutes=1)
+        )
+        earlier_dag_model.set_scheduling_state(
+            DagSchedulingState.PAUSED, paused_until=DEFAULT_DATE - timedelta(minutes=2)
+        )
+        session.flush()
+
+        self.job_runner = SchedulerJobRunner(job=Job(), executors=[self.null_exec])
+        self.job_runner._resume_dags_with_expired_pause(session=session)
+
+        assert earlier_dag_model.scheduling_state == DagSchedulingState.ACTIVE
+        assert later_dag_model.scheduling_state == DagSchedulingState.PAUSED
+
     @staticmethod
     def _find_assets_activation(session) -> tuple[list[AssetModel], list[AssetModel]]:
         assets = session.execute(

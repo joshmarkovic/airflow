@@ -22,6 +22,7 @@ from unittest import mock
 
 import pendulum
 import pytest
+import time_machine
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, insert, select, update
 
@@ -45,6 +46,7 @@ from tests_common.test_utils.db import (
     clear_db_runs,
     clear_db_serialized_dags,
 )
+from tests_common.test_utils.format_datetime import from_datetime_to_zulu_without_ms
 from tests_common.test_utils.logs import check_last_log
 
 pytestmark = pytest.mark.db_test
@@ -67,6 +69,9 @@ UTC_JSON_REPR = "UTC" if pendulum.__version__.startswith("3") else "Timezone('UT
 API_PREFIX = "/dags"
 DAG3_START_DATE_1 = datetime(2018, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 DAG3_START_DATE_2 = datetime(2019, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+FROZEN_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+PAUSED_UNTIL = FROZEN_TIME + timedelta(hours=1)
+EXISTING_PAUSED_UNTIL = PAUSED_UNTIL + timedelta(days=1)
 
 
 class TestDagEndpoint:
@@ -993,6 +998,123 @@ class TestPatchDag(TestDagEndpoint):
 
         assert response.status_code == 422
 
+    @pytest.mark.parametrize(
+        ("body", "query_params", "expected_paused_until"),
+        [
+            pytest.param(
+                {"is_paused": True, "paused_until": PAUSED_UNTIL.isoformat()}, {}, PAUSED_UNTIL, id="pause"
+            ),
+            pytest.param(
+                {
+                    "is_paused": True,
+                    "paused_until": PAUSED_UNTIL.astimezone(timezone(timedelta(hours=2))).isoformat(),
+                },
+                {},
+                PAUSED_UNTIL,
+                id="non-utc-offset",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED, "paused_until": PAUSED_UNTIL.isoformat()},
+                {},
+                PAUSED_UNTIL,
+                id="scheduling-state-paused",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.DRAINING, "paused_until": PAUSED_UNTIL.isoformat()},
+                {},
+                PAUSED_UNTIL,
+                id="drain",
+            ),
+            pytest.param(
+                {"is_paused": True, "paused_until": PAUSED_UNTIL.isoformat()},
+                {"update_mask": ["is_paused", "paused_until"]},
+                PAUSED_UNTIL,
+                id="masked-in",
+            ),
+            pytest.param(
+                {"is_paused": True, "paused_until": PAUSED_UNTIL.isoformat()},
+                {"update_mask": ["is_paused"]},
+                EXISTING_PAUSED_UNTIL,
+                id="masked-out",
+            ),
+            pytest.param(
+                {"is_paused": True},
+                {"update_mask": ["is_paused", "paused_until"]},
+                EXISTING_PAUSED_UNTIL,
+                id="masked-in-but-omitted",
+            ),
+            pytest.param({"is_paused": True}, {}, EXISTING_PAUSED_UNTIL, id="omitted"),
+            pytest.param({"is_paused": True, "paused_until": None}, {}, None, id="null"),
+            pytest.param({"is_paused": False}, {}, None, id="unpause"),
+        ],
+    )
+    @time_machine.travel(FROZEN_TIME, tick=False)
+    def test_patch_dag_updates_paused_until(
+        self, test_client, session, body, query_params, expected_paused_until
+    ):
+        session.execute(
+            update(DagModel)
+            .where(DagModel.dag_id == DAG1_ID)
+            .values(is_paused=True, paused_until=EXISTING_PAUSED_UNTIL)
+        )
+        session.commit()
+
+        response = test_client.patch(f"/dags/{DAG1_ID}", json=body, params=query_params)
+
+        assert response.status_code == 200
+        assert response.json()["paused_until"] == from_datetime_to_zulu_without_ms(expected_paused_until)
+        session.expire_all()
+        assert session.get(DagModel, DAG1_ID).paused_until == expected_paused_until
+
+    @pytest.mark.parametrize(
+        ("body", "expected_error"),
+        [
+            pytest.param(
+                {"is_paused": False, "paused_until": PAUSED_UNTIL.isoformat()},
+                "`paused_until` can only be set when pausing or draining the Dag",
+                id="unpause",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.ACTIVE, "paused_until": PAUSED_UNTIL.isoformat()},
+                "`paused_until` can only be set when pausing or draining the Dag",
+                id="activate",
+            ),
+            pytest.param(
+                {"is_paused": True, "paused_until": FROZEN_TIME.isoformat()},
+                "`paused_until` must be in the future",
+                id="not-in-future",
+            ),
+            pytest.param(
+                {"is_paused": True, "paused_until": "2026-01-01T01:00:00"},
+                "Input should have timezone info",
+                id="naive",
+            ),
+        ],
+    )
+    @time_machine.travel(FROZEN_TIME, tick=False)
+    def test_patch_dag_rejects_invalid_paused_until(self, test_client, body, expected_error):
+        response = test_client.patch(f"/dags/{DAG1_ID}", json=body)
+
+        assert response.status_code == 422
+        assert expected_error in response.json()["detail"][0]["msg"]
+
+    @pytest.mark.parametrize(
+        "update_mask",
+        [
+            pytest.param(["paused_until"], id="no-state-field"),
+            pytest.param(["is_paused", "scheduling_state", "paused_until"], id="two-state-fields"),
+        ],
+    )
+    @time_machine.travel(FROZEN_TIME, tick=False)
+    def test_patch_dag_rejects_update_mask_with_paused_until(self, test_client, update_mask):
+        response = test_client.patch(
+            f"/dags/{DAG1_ID}",
+            json={"is_paused": True, "paused_until": PAUSED_UNTIL.isoformat()},
+            params={"update_mask": update_mask},
+        )
+
+        assert response.status_code == 400
+
     def test_patch_dag_should_response_401(self, unauthenticated_test_client):
         response = unauthenticated_test_client.patch(f"/dags/{DAG1_ID}", json={"is_paused": True})
         assert response.status_code == 401
@@ -1167,6 +1289,72 @@ class TestPatchDags(TestDagEndpoint):
 
         assert response.status_code == 422
 
+    @pytest.mark.parametrize(
+        ("body", "query_params", "expected_paused_until"),
+        [
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED, "paused_until": PAUSED_UNTIL.isoformat()},
+                {},
+                PAUSED_UNTIL,
+                id="pause",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED, "paused_until": PAUSED_UNTIL.isoformat()},
+                {"update_mask": ["scheduling_state", "paused_until"]},
+                PAUSED_UNTIL,
+                id="masked-in",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED, "paused_until": PAUSED_UNTIL.isoformat()},
+                {"update_mask": ["scheduling_state"]},
+                EXISTING_PAUSED_UNTIL,
+                id="masked-out",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED},
+                {"update_mask": ["scheduling_state", "paused_until"]},
+                EXISTING_PAUSED_UNTIL,
+                id="masked-in-but-omitted",
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED}, {}, EXISTING_PAUSED_UNTIL, id="omitted"
+            ),
+            pytest.param(
+                {"scheduling_state": DagSchedulingState.PAUSED, "paused_until": None}, {}, None, id="null"
+            ),
+            pytest.param({"is_paused": False}, {}, None, id="unpause"),
+        ],
+    )
+    @time_machine.travel(FROZEN_TIME, tick=False)
+    def test_patch_dags_updates_paused_until(
+        self, test_client, session, body, query_params, expected_paused_until
+    ):
+        session.execute(
+            update(DagModel)
+            .where(DagModel.dag_id == DAG1_ID)
+            .values(is_paused=True, paused_until=EXISTING_PAUSED_UNTIL)
+        )
+        session.commit()
+
+        response = test_client.patch("/dags", json=body, params={"dag_id_pattern": "dag1", **query_params})
+
+        assert response.status_code == 200
+        assert [dag["paused_until"] for dag in response.json()["dags"]] == [
+            from_datetime_to_zulu_without_ms(expected_paused_until)
+        ]
+        session.expire_all()
+        assert session.get(DagModel, DAG1_ID).paused_until == expected_paused_until
+
+    @time_machine.travel(FROZEN_TIME, tick=False)
+    def test_patch_dags_rejects_update_mask_with_only_paused_until(self, test_client):
+        response = test_client.patch(
+            "/dags",
+            json={"is_paused": True, "paused_until": PAUSED_UNTIL.isoformat()},
+            params={"dag_id_pattern": "dag1", "update_mask": "paused_until"},
+        )
+
+        assert response.status_code == 400
+
     @mock.patch("airflow.api_fastapi.auth.managers.base_auth_manager.BaseAuthManager.get_authorized_dag_ids")
     def test_patch_dags_should_call_authorized_dag_ids(self, mock_get_authorized_dag_ids, test_client):
         mock_get_authorized_dag_ids.return_value = {DAG1_ID, DAG2_ID}
@@ -1272,6 +1460,54 @@ class TestBulkDags(TestDagEndpoint):
         assert response.status_code == 200
         session.expire_all()
         assert session.scalar(select(DagModel.is_paused).where(DagModel.dag_id == DAG1_ID)) is True
+
+    @pytest.mark.parametrize(
+        ("timer_fields", "mask_fields", "expected_paused_until"),
+        [
+            pytest.param({"paused_until": PAUSED_UNTIL.isoformat()}, {}, PAUSED_UNTIL, id="set"),
+            pytest.param(
+                {"paused_until": PAUSED_UNTIL.isoformat()},
+                {"update_mask": ["scheduling_state"]},
+                EXISTING_PAUSED_UNTIL,
+                id="masked-out",
+            ),
+            pytest.param({}, {}, EXISTING_PAUSED_UNTIL, id="omitted"),
+            pytest.param({"paused_until": None}, {}, None, id="null"),
+        ],
+    )
+    @time_machine.travel(FROZEN_TIME, tick=False)
+    def test_bulk_update_updates_paused_until(
+        self, test_client, session, timer_fields, mask_fields, expected_paused_until
+    ):
+        session.execute(
+            update(DagModel)
+            .where(DagModel.dag_id == DAG1_ID)
+            .values(is_paused=True, paused_until=EXISTING_PAUSED_UNTIL)
+        )
+        session.commit()
+
+        response = test_client.patch(
+            "/dags/bulk",
+            json={
+                "actions": [
+                    {
+                        "action": "update",
+                        "entities": [
+                            {
+                                "dag_id": DAG1_ID,
+                                "scheduling_state": DagSchedulingState.PAUSED,
+                                **timer_fields,
+                            },
+                        ],
+                        **mask_fields,
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["update"]["success"] == [DAG1_ID]
+        session.expire_all()
+        assert session.get(DagModel, DAG1_ID).paused_until == expected_paused_until
 
     def test_bulk_update_not_found_fails(self, test_client, session):
         """FAIL semantics: an unknown dag_id fails the whole action and nothing is updated."""
@@ -1604,6 +1840,7 @@ class TestDagDetails(TestDagEndpoint):
                     "value": 1,
                 }
             },
+            "paused_until": None,
             "relative_fileloc": "test_dags.py",
             "render_template_as_native_obj": False,
             "rerun_with_latest_version": None,
@@ -1809,6 +2046,7 @@ class TestGetDag(TestDagEndpoint):
             "next_dagrun_logical_date": None,
             "next_dagrun_run_after": None,
             "owners": ["airflow"],
+            "paused_until": None,
             "relative_fileloc": "test_dags.py",
             "scheduling_state": "active",
             "tags": tags,

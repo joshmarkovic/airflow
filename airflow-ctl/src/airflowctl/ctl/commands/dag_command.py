@@ -40,17 +40,32 @@ from airflowctl.ctl.console_formatting import AirflowConsole
 from airflowctl.ctl.utils.dag_run import resolve_dag_run
 
 
+def _parse_until(value: str | None) -> datetime.datetime | None:
+    if value is None:
+        return None
+    try:
+        until = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        rich.print(f"[red]Invalid --until: {value!r}[/red]")
+        sys.exit(1)
+    if until.tzinfo is None:
+        rich.print("[red]--until must include a timezone offset[/red]")
+        sys.exit(1)
+    return until
+
+
 def update_dag_state(
     dag_id: str,
     operation: Literal["pause", "unpause", "drain"],
     api_client,
     output: str,
+    paused_until: datetime.datetime | None = None,
 ):
     """Update Dag state (pause/unpause/drain)."""
     dag_body = (
-        DAGPatchBody(scheduling_state=DagSchedulingState.DRAINING)
+        DAGPatchBody(scheduling_state=DagSchedulingState.DRAINING, paused_until=paused_until)
         if operation == "drain"
-        else DAGPatchBody(is_paused=operation == "pause")
+        else DAGPatchBody(is_paused=operation == "pause", paused_until=paused_until)
     )
     try:
         response = api_client.dags.update(dag_id=dag_id, dag_body=dag_body)
@@ -76,6 +91,7 @@ def pause(args, api_client=NEW_API_CLIENT) -> None:
         operation="pause",
         api_client=api_client,
         output=args.output,
+        paused_until=_parse_until(args.until),
     )
 
 
@@ -98,6 +114,7 @@ def drain(args, api_client=NEW_API_CLIENT) -> None:
         operation="drain",
         api_client=api_client,
         output=args.output,
+        paused_until=_parse_until(args.until),
     )
 
 

@@ -813,6 +813,23 @@ the scheduler automatically changes the Dag to paused. A backfill started while 
 the drain until its Dag runs have been created and finished. While a Dag is draining, you can cancel the drain
 to make the Dag active again.
 
+You can also pause or drain a Dag for a set time. Set ``paused_until`` in the API, or ``--until`` in
+``airflowctl dags pause`` and ``airflowctl dags drain``, to a future time that includes a timezone. A time
+without a timezone is rejected. The scheduler makes the Dag active again shortly after that time and
+records a ``pause_expired`` audit log event. The Dag then behaves as if you had unpaused it yourself, so
+its ``catchup`` setting decides which missed Dag runs are created. When many timers end at once, the
+scheduler resumes the Dags a few at a time.
+
+- If the drain finishes first, the Dag is paused and keeps its timer. If the time passes while the Dag is
+  still draining, the Dag becomes active without waiting for the drain to finish.
+- A request that sets ``paused_until`` to a time sets or replaces the timer. Setting it to ``null``
+  removes it, and leaving it out keeps it. Making the Dag active, including cancelling a drain, always
+  removes it.
+- ``airflowctl dags pause`` and ``airflowctl dags drain`` always send ``paused_until``, so running them
+  without ``--until`` removes the timer. The legacy ``airflow dags pause`` command leaves it in place.
+- A Dag that the scheduler pauses after too many consecutive failed Dag runs loses its timer. It stays paused
+  until someone unpauses it.
+
 Dags can be deactivated (do not confuse it with ``Active`` tag in the UI) by removing them from the
 ``DAGS_FOLDER``. When the Dag processor parses the ``DAGS_FOLDER`` and misses the Dag that it had seen
 before and stored in the database it will set it as deactivated. The metadata and history of the

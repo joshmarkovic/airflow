@@ -209,6 +209,15 @@ Task Instance Events
 - ``action_set_running``: User set task instance as running
 - ``action_clear``: User cleared task instance state
 
+Dag Events
+~~~~~~~~~~
+
+**System-generated Dag events**:
+
+- ``pause_expired``: Scheduler made a Dag active again because its timed pause ended
+- ``drain_completed``: Scheduler paused a draining Dag after its outstanding Dag runs finished
+- ``paused``: Scheduler paused a Dag after too many consecutive failed Dag runs
+
 User Action Events
 ~~~~~~~~~~~~~~~~~~
 

@@ -1729,6 +1729,7 @@ class BulkDAGBody(BaseModel):
     )
     is_paused: Annotated[bool | None, Field(title="Is Paused")] = None
     scheduling_state: DagSchedulingState | None = None
+    paused_until: Annotated[datetime | None, Field(title="Paused Until")] = None
     dag_id: Annotated[str, Field(title="Dag Id")]
 
 
@@ -2035,6 +2036,7 @@ class DAGPatchBody(BaseModel):
     )
     is_paused: Annotated[bool | None, Field(title="Is Paused")] = None
     scheduling_state: DagSchedulingState | None = None
+    paused_until: Annotated[datetime | None, Field(title="Paused Until")] = None
 
 
 class DAGResponse(BaseModel):
@@ -2046,6 +2048,7 @@ class DAGResponse(BaseModel):
     dag_display_name: Annotated[str, Field(title="Dag Display Name")]
     is_paused: Annotated[bool, Field(title="Is Paused")]
     scheduling_state: DagSchedulingState | None = "active"
+    paused_until: Annotated[datetime | None, Field(title="Paused Until")] = None
     is_stale: Annotated[bool, Field(title="Is Stale")]
     last_parsed_time: Annotated[datetime | None, Field(title="Last Parsed Time")]
     last_parse_duration: Annotated[float | None, Field(title="Last Parse Duration")]
@@ -2973,6 +2976,7 @@ class DAGDetailsResponse(BaseModel):
     dag_display_name: Annotated[str, Field(title="Dag Display Name")]
     is_paused: Annotated[bool, Field(title="Is Paused")]
     scheduling_state: DagSchedulingState | None = "active"
+    paused_until: Annotated[datetime | None, Field(title="Paused Until")] = None
     is_stale: Annotated[bool, Field(title="Is Stale")]
     last_parsed_time: Annotated[datetime | None, Field(title="Last Parsed Time")]
     last_parse_duration: Annotated[float | None, Field(title="Last Parse Duration")]

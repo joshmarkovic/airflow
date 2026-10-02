@@ -27,6 +27,7 @@ from itsdangerous import URLSafeSerializer
 from pendulum.tz.timezone import FixedTimezone, Timezone
 from pydantic import (
     AliasGenerator,
+    AwareDatetime,
     ConfigDict,
     computed_field,
     field_serializer,
@@ -35,6 +36,7 @@ from pydantic import (
 )
 
 from airflow._shared.module_loading import qualname
+from airflow._shared.timezones import timezone
 from airflow.api_fastapi.core_api.base import BaseModel, StrictBaseModel, make_partial_model
 from airflow.api_fastapi.core_api.datamodels.common import MaybeAssetExpression
 from airflow.api_fastapi.core_api.datamodels.dag_tags import DagTagResponse
@@ -87,6 +89,7 @@ class DAGResponse(BaseModel):
     dag_display_name: str
     is_paused: bool
     scheduling_state: DagSchedulingState = DagSchedulingState.ACTIVE
+    paused_until: datetime | None = None
     is_stale: bool
     last_parsed_time: datetime | None
     last_parse_duration: float | None
@@ -167,6 +170,13 @@ class DAGPatchBody(StrictBaseModel):
 
     is_paused: bool | None = None
     scheduling_state: DagSchedulingState | None = None
+    paused_until: AwareDatetime | None = None
+
+    @field_validator("paused_until")
+    @classmethod
+    def convert_paused_until_to_utc(cls, paused_until: datetime | None) -> datetime | None:
+        """Normalize ``paused_until`` to UTC so the response matches what the database returns."""
+        return timezone.convert_to_utc(paused_until)
 
     @model_validator(mode="after")
     def validate_single_state_update(self) -> DAGPatchBody:
@@ -176,6 +186,20 @@ class DAGPatchBody(StrictBaseModel):
         provided = [name for name in ("is_paused", "scheduling_state") if getattr(self, name) is not None]
         if len(provided) != 1:
             raise ValueError("Exactly one of `is_paused` or `scheduling_state` must be provided")
+        return self
+
+    @model_validator(mode="after")
+    def validate_paused_until(self) -> DAGPatchBody:
+        """Allow ``paused_until`` only in the future and only on a request that pauses or drains the Dag."""
+        if self.paused_until is None:
+            return self
+        if not (
+            self.is_paused
+            or self.scheduling_state in (DagSchedulingState.PAUSED, DagSchedulingState.DRAINING)
+        ):
+            raise ValueError("`paused_until` can only be set when pausing or draining the Dag")
+        if self.paused_until <= timezone.utcnow():
+            raise ValueError("`paused_until` must be in the future")
         return self
 
 

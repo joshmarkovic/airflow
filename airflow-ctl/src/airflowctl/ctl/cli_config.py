@@ -332,6 +332,14 @@ ARG_DAG_CLEAR_YES = Arg(
     action="store_true",
     help="Do not prompt to confirm clearing task instances",
 )
+ARG_DAG_UNTIL = Arg(
+    flags=("--until",),
+    type=str,
+    help=(
+        "Make the Dag active again at this time, given as an ISO 8601 date-time with a timezone "
+        "offset, for example 2026-10-03T14:00:00+00:00"
+    ),
+)
 
 # Task Commands Args
 ARG_TASK_ID = Arg(
@@ -1150,6 +1158,7 @@ DAG_COMMANDS = (
         func=lazy_load_command("airflowctl.ctl.commands.dag_command.drain"),
         args=(
             ARG_DAG_ID,
+            ARG_DAG_UNTIL,
             ARG_OUTPUT,
         ),
     ),
@@ -1168,6 +1177,7 @@ DAG_COMMANDS = (
         func=lazy_load_command("airflowctl.ctl.commands.dag_command.pause"),
         args=(
             ARG_DAG_ID,
+            ARG_DAG_UNTIL,
             ARG_OUTPUT,
         ),
     ),

@@ -556,6 +556,24 @@ class TestDagRun:
         # Callbacks is None as execute_callbacks=True
         assert callback is None
 
+    def test_pause_after_consecutive_failed_runs_clears_paused_until(self, dag_maker, session):
+        with dag_maker(max_consecutive_failed_dag_runs=1, session=session) as dag:
+            EmptyOperator(task_id="task")
+        dag_maker.dag_model.set_scheduling_state(
+            DagSchedulingState.DRAINING, paused_until=DEFAULT_DATE + datetime.timedelta(days=1)
+        )
+        dag_run = dag_maker.create_dagrun()
+        dag_run.get_task_instance("task", session=session).set_state(
+            TaskInstanceState.FAILED, session=session
+        )
+
+        dag_run.update_state(session=session)
+
+        session.expire_all()
+        dag_model = session.get(DagModel, dag.dag_id)
+        assert dag_model.is_paused
+        assert dag_model.paused_until is None
+
     def test_on_success_callback_when_task_skipped(self, session, testing_dag_bundle):
         mock_on_success = mock.MagicMock()
         mock_on_success.__name__ = "mock_on_success"

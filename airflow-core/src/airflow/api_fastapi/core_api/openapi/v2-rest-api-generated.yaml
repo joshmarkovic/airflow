@@ -12369,6 +12369,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/DagSchedulingState'
           - type: 'null'
+        paused_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Paused Until
         dag_id:
           type: string
           title: Dag Id
@@ -13442,6 +13448,12 @@ components:
         scheduling_state:
           $ref: '#/components/schemas/DagSchedulingState'
           default: active
+        paused_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Paused Until
         is_stale:
           type: boolean
           title: Is Stale
@@ -13745,6 +13757,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/DagSchedulingState'
           - type: 'null'
+        paused_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Paused Until
       additionalProperties: false
       type: object
       title: DAGPatchBody
@@ -13763,6 +13781,12 @@ components:
         scheduling_state:
           $ref: '#/components/schemas/DagSchedulingState'
           default: active
+        paused_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Paused Until
         is_stale:
           type: boolean
           title: Is Stale

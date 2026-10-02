@@ -25,8 +25,13 @@ import httpx
 import pytest
 
 from airflowctl.api.client import ClientKind
-from airflowctl.api.datamodels.generated import ClearTaskInstancesBody, DAGResponse, DagSchedulingState
-from airflowctl.api.operations import DagRunOperations, ServerResponseError, TasksOperations
+from airflowctl.api.datamodels.generated import (
+    ClearTaskInstancesBody,
+    DAGPatchBody,
+    DAGResponse,
+    DagSchedulingState,
+)
+from airflowctl.api.operations import DagRunOperations, DagsOperations, ServerResponseError, TasksOperations
 from airflowctl.ctl import cli_parser
 from airflowctl.ctl.commands import dag_command
 
@@ -195,8 +200,9 @@ class TestDagCommands:
 
     @staticmethod
     def _api_client_mock():
-        api_client = Mock(spec_set=["dag_runs", "tasks"])
+        api_client = Mock(spec_set=["dag_runs", "dags", "tasks"])
         api_client.dag_runs = create_autospec(DagRunOperations, instance=True, spec_set=True)
+        api_client.dags = create_autospec(DagsOperations, instance=True, spec_set=True)
         api_client.tasks = create_autospec(TasksOperations, instance=True, spec_set=True)
         return api_client
 
@@ -279,6 +285,53 @@ class TestDagCommands:
                 self.parser.parse_args(["dags", "drain", self.dag_id]),
                 api_client=api_client,
             )
+
+    @pytest.mark.parametrize(
+        ("command", "expected_state"),
+        [
+            ("pause", {"is_paused": True}),
+            ("drain", {"scheduling_state": DagSchedulingState.DRAINING}),
+        ],
+    )
+    @pytest.mark.parametrize("until", ["2026-10-03T14:00:00+00:00", "2026-10-03T14:00:00Z"])
+    def test_pause_and_drain_send_until(self, command, expected_state, until):
+        api_client = self._api_client_mock()
+        api_client.dags.update.return_value = self.dag_response_unpaused
+
+        getattr(dag_command, command)(
+            self.parser.parse_args(["dags", command, self.dag_id, "--until", until]),
+            api_client=api_client,
+        )
+
+        api_client.dags.update.assert_called_once_with(
+            dag_id=self.dag_id,
+            dag_body=DAGPatchBody(
+                **expected_state,
+                paused_until=datetime.datetime(2026, 10, 3, 14, tzinfo=datetime.timezone.utc),
+            ),
+        )
+
+    @pytest.mark.parametrize("command", ["pause", "drain"])
+    @pytest.mark.parametrize(
+        ("until", "expected_message"),
+        [
+            ("not-a-date", "Invalid --until: 'not-a-date'"),
+            ("2026-10-03T14:00:00", "--until must include a timezone offset"),
+        ],
+        ids=["unparsable", "naive"],
+    )
+    def test_pause_and_drain_reject_bad_until(self, command, until, expected_message, capsys):
+        api_client = self._api_client_mock()
+
+        with pytest.raises(SystemExit) as ctx:
+            getattr(dag_command, command)(
+                self.parser.parse_args(["dags", command, self.dag_id, "--until", until]),
+                api_client=api_client,
+            )
+
+        assert ctx.value.code == 1
+        api_client.dags.update.assert_not_called()
+        assert _normalize_rich_output(capsys.readouterr().out) == expected_message
 
     def test_next_execution(self, api_client_maker):
         api_client = api_client_maker(
